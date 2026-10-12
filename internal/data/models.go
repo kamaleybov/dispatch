@@ -219,6 +219,9 @@ type FilterOptions struct {
 	// tables are also searched across their user-visible content fields.
 	// FTS5 is additive and is not required for source-table matches.
 	DeepSearch bool `json:"deep_search,omitempty"`
+
+	userTitleMatchIDs    []string
+	userTitleExcludedIDs []string
 }
 
 // SortField identifies which column to sort sessions by.

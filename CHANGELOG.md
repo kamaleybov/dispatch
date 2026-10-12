@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **Manually renamed Copilot sessions showing stale titles**: Dispatch now treats a `workspace.yaml` name marked `user_named: true` as authoritative over Chronicle's indexed summary. The corrected title is used consistently in lists, grouped views, details, search, sorting, CLI output, and exports, and live rename changes refresh without restarting Dispatch.
+
 ## [v0.16.2] - 2026-08-27
 
 ### Fixed

@@ -544,6 +544,12 @@ func NewModel() Model {
 		default:
 		}
 	}, cfg.EffectiveAttentionThreshold(), cfg.WorkspaceRecovery)
+	m.eventWatcher.SetWorkspaceChangeHandler(func(id string) {
+		select {
+		case m.eventWatchCh <- eventWatcherUpdateMsg{sessionID: id, workspaceChanged: true}:
+		default:
+		}
+	})
 	if !screenshotMode {
 		if err := m.eventWatcher.Start(); err != nil {
 			slog.Debug("eventwatcher: failed to start", "error", err)

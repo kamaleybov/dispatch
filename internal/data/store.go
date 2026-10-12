@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jongio/dispatch/internal/platform"
@@ -47,11 +48,16 @@ const (
 
 // Store provides read-only access to the Copilot CLI session store.
 type Store struct {
-	db          *sql.DB
-	hasHostType bool   // true if sessions table has host_type column (schema v3+)
-	hasFTS5     bool   // true if FTS5 search_index virtual table is present
-	tempDir     string // OS temp directory prefix, used to filter automated sessions
-	homeDir     string // user home directory, used to filter hidden dotfolder sessions
+	db                  *sql.DB
+	hasHostType         bool                     // true if sessions table has host_type column (schema v3+)
+	hasFTS5             bool                     // true if FTS5 search_index virtual table is present
+	tempDir             string                   // OS temp directory prefix, used to filter automated sessions
+	homeDir             string                   // user home directory, used to filter hidden dotfolder sessions
+	userTitleSource     func() map[string]string // authoritative Copilot workspace titles
+	userTitleLookup     func(string) (string, bool)
+	userTitleMu         sync.Mutex
+	userTitleCache      map[string]string
+	userTitleCacheValid bool
 }
 
 // closeRows closes a rows object, intentionally discarding the error.
@@ -119,7 +125,15 @@ func OpenPath(path string) (*Store, error) {
 	if err != nil {
 		slog.Warn("could not resolve home directory", "error", err)
 	}
-	return &Store{db: db, hasHostType: hasHostType, hasFTS5: hasFTS5, tempDir: os.TempDir(), homeDir: homeDir}, nil
+	return &Store{
+		db:              db,
+		hasHostType:     hasHostType,
+		hasFTS5:         hasFTS5,
+		tempDir:         os.TempDir(),
+		homeDir:         homeDir,
+		userTitleSource: ScanUserTitles,
+		userTitleLookup: readSessionUserTitle,
+	}, nil
 }
 
 // Close closes the underlying database connection.
@@ -453,10 +467,12 @@ func (fb *filterBuilder) apply(f FilterOptions) {
 				clauses = append(clauses, `s.id IN (SELECT session_id FROM search_index WHERE content MATCH ?)`)
 				fb.args = append(fb.args, ftsTerms)
 			}
+			clauses = append(clauses, fb.sessionIDClauses(f.userTitleMatchIDs)...)
 			fb.wheres = append(fb.wheres, "("+strings.Join(clauses, " OR ")+")")
 		} else {
 			// Quick mode: search only session-level fields (no JOINs).
 			clauses := fb.appendMatchClauses(quickSearchClauses, m)
+			clauses = append(clauses, fb.sessionIDClauses(f.userTitleMatchIDs)...)
 			fb.wheres = append(fb.wheres, "("+strings.Join(clauses, " OR ")+")")
 		}
 	}
@@ -549,6 +565,9 @@ func (fb *filterBuilder) apply(f FilterOptions) {
 			fb.wheres = append(fb.wheres, "NOT ("+strings.Join(clauses, " OR ")+")")
 		}
 	}
+	for _, clause := range fb.sessionIDClauses(f.userTitleExcludedIDs) {
+		fb.wheres = append(fb.wheres, "NOT ("+clause+")")
+	}
 }
 
 // appendMatchClauses renders each clause and records its bound values, in
@@ -562,6 +581,23 @@ func (fb *filterBuilder) appendMatchClauses(clauses []contentClause, m matcher) 
 		}
 	}
 	return rendered
+}
+
+func (fb *filterBuilder) sessionIDClauses(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	clauses := make([]string, 0, (len(ids)+maxIDsPerQuery-1)/maxIDsPerQuery)
+	for start := 0; start < len(ids); start += maxIDsPerQuery {
+		end := min(start+maxIDsPerQuery, len(ids))
+		placeholders := make([]string, end-start)
+		for i, id := range ids[start:end] {
+			placeholders[i] = "?"
+			fb.args = append(fb.args, id)
+		}
+		clauses = append(clauses, "s.id IN ("+strings.Join(placeholders, ",")+")")
+	}
+	return clauses
 }
 
 func folderMatchPatterns(folder string, windows bool) []string {
@@ -799,6 +835,9 @@ func foldASCIICase(value string) string {
 // specified. A negative limit returns every match; zero uses the default.
 // TurnCount and FileCount are computed via subqueries.
 func (s *Store) ListSessions(ctx context.Context, filter FilterOptions, sort SortOptions, limit int) ([]Session, error) {
+	titles := s.userTitles()
+	filter = filterByUserTitles(filter, titles)
+
 	var fb filterBuilder
 	fb.hasFTS = s.hasFTS5
 	fb.hasHostType = s.hasHostType
@@ -825,7 +864,8 @@ func (s *Store) ListSessions(ctx context.Context, filter FilterOptions, sort Sor
 	if limit == 0 {
 		limit = defaultQueryLimit
 	}
-	if limit > 0 {
+	sortEffectiveNames := sort.Field == SortByName && len(titles) > 0
+	if limit > 0 && !sortEffectiveNames {
 		q += limitClause
 		fb.args = append(fb.args, limit)
 	}
@@ -846,6 +886,13 @@ func (s *Store) ListSessions(ctx context.Context, filter FilterOptions, sort Sor
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating session rows: %w", err)
+	}
+	applyUserTitles(sessions, titles)
+	if sortEffectiveNames {
+		sortSessionsByName(sessions, sort.Order)
+		if limit > 0 && len(sessions) > limit {
+			sessions = sessions[:limit]
+		}
 	}
 	return sessions, nil
 }
@@ -872,9 +919,11 @@ func (s *Store) ListSessionsByIDs(ctx context.Context, ids []string) ([]Session,
 	}
 
 	// Assemble result in input order, skipping missing IDs.
+	titles := s.userTitles()
 	result := make([]Session, 0, len(byID))
 	for _, id := range ids {
 		if sess, ok := byID[id]; ok {
+			applyUserTitle(&sess, titles)
 			result = append(result, sess)
 		}
 	}
@@ -1001,6 +1050,9 @@ func (s *Store) GetSession(ctx context.Context, id string) (*SessionDetail, erro
 	sess, err := scanSession(row)
 	if err != nil {
 		return nil, fmt.Errorf("loading session %s: %w", id, err)
+	}
+	if title, ok := s.userTitle(id); ok {
+		sess.Summary = title
 	}
 
 	detail := &SessionDetail{Session: sess}
@@ -1478,6 +1530,9 @@ func (s *Store) ResolveIDPrefix(ctx context.Context, prefix string) (string, err
 // given filter and sort order within each group. A negative limit returns
 // every match; zero uses the default.
 func (s *Store) GroupSessions(ctx context.Context, pivot PivotField, filter FilterOptions, sort SortOptions, limit int) ([]SessionGroup, error) {
+	titles := s.userTitles()
+	filter = filterByUserTitles(filter, titles)
+
 	var fb filterBuilder
 	fb.hasFTS = s.hasFTS5
 	fb.hasHostType = s.hasHostType
@@ -1518,7 +1573,8 @@ func (s *Store) GroupSessions(ctx context.Context, pivot PivotField, filter Filt
 	if limit == 0 {
 		limit = defaultGroupLimit
 	}
-	if limit > 0 {
+	sortEffectiveNames := sort.Field == SortByName && len(titles) > 0
+	if limit > 0 && !sortEffectiveNames {
 		q += limitClause
 		fb.args = append(fb.args, limit)
 	}
@@ -1529,8 +1585,11 @@ func (s *Store) GroupSessions(ctx context.Context, pivot PivotField, filter Filt
 	}
 	defer func() { _ = rows.Close() }()
 
-	groupIndexes := make(map[string]int)
-	var result []SessionGroup
+	type groupedSession struct {
+		label   string
+		session Session
+	}
+	var grouped []groupedSession
 
 	for rows.Next() {
 		var label string
@@ -1551,18 +1610,32 @@ func (s *Store) GroupSessions(ctx context.Context, pivot PivotField, filter Filt
 				}
 			}
 		}
-
-		index, ok := groupIndexes[label]
-		if !ok {
-			index = len(result)
-			groupIndexes[label] = index
-			result = append(result, SessionGroup{Label: label})
-		}
-		result[index].Sessions = append(result[index].Sessions, sess)
-		result[index].Count = len(result[index].Sessions)
+		applyUserTitle(&sess, titles)
+		grouped = append(grouped, groupedSession{label: label, session: sess})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating grouped session rows: %w", err)
+	}
+	if sortEffectiveNames {
+		slices.SortStableFunc(grouped, func(a, b groupedSession) int {
+			return compareSessionsByName(a.session, b.session, sort.Order)
+		})
+		if limit > 0 && len(grouped) > limit {
+			grouped = grouped[:limit]
+		}
+	}
+
+	groupIndexes := make(map[string]int)
+	var result []SessionGroup
+	for _, item := range grouped {
+		index, ok := groupIndexes[item.label]
+		if !ok {
+			index = len(result)
+			groupIndexes[item.label] = index
+			result = append(result, SessionGroup{Label: item.label})
+		}
+		result[index].Sessions = append(result[index].Sessions, item.session)
+		result[index].Count = len(result[index].Sessions)
 	}
 
 	// Groups arrive in "first session seen" order because the query is sorted
@@ -1577,6 +1650,54 @@ func (s *Store) GroupSessions(ctx context.Context, pivot PivotField, filter Filt
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+func (s *Store) userTitles() map[string]string {
+	s.userTitleMu.Lock()
+	defer s.userTitleMu.Unlock()
+
+	if s.userTitleCacheValid {
+		return s.userTitleCache
+	}
+	if s.userTitleSource == nil {
+		return nil
+	}
+	s.userTitleCache = s.userTitleSource()
+	s.userTitleCacheValid = true
+	return s.userTitleCache
+}
+
+func (s *Store) userTitle(id string) (string, bool) {
+	if s.userTitleLookup != nil {
+		return s.userTitleLookup(id)
+	}
+	title, ok := s.userTitles()[id]
+	return title, ok
+}
+
+// InvalidateUserTitles clears cached workspace metadata before a live reload.
+func (s *Store) InvalidateUserTitles() {
+	s.userTitleMu.Lock()
+	defer s.userTitleMu.Unlock()
+	s.userTitleCache = nil
+	s.userTitleCacheValid = false
+}
+
+func sortSessionsByName(sessions []Session, order SortOrder) {
+	slices.SortStableFunc(sessions, func(a, b Session) int {
+		return compareSessionsByName(a, b, order)
+	})
+}
+
+func compareSessionsByName(a, b Session, order SortOrder) int {
+	cmp := strings.Compare(a.Summary, b.Summary)
+	if order != Ascending {
+		cmp = -cmp
+	}
+	if cmp != 0 {
+		return cmp
+	}
+	return strings.Compare(a.ID, b.ID)
+}
 
 func (s *Store) distinctStrings(ctx context.Context, query string, args ...any) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)

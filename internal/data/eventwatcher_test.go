@@ -91,6 +91,96 @@ func TestEventWatcher_FiresOnEventWrite(t *testing.T) {
 	}
 }
 
+func TestEventWatcher_FiresOnWorkspaceChange(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "workspace-session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspacePath := filepath.Join(sessionDir, "workspace.yaml")
+	if err := os.WriteFile(workspacePath, []byte("name: old\nuser_named: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SESSION_STATE", dir)
+
+	var mu sync.Mutex
+	var changedID string
+	attentionCalls := 0
+	ew := NewEventWatcher(func(string, AttentionStatus) {
+		mu.Lock()
+		attentionCalls++
+		mu.Unlock()
+	}, 15*time.Minute, false)
+	ew.SetWorkspaceChangeHandler(func(id string) {
+		mu.Lock()
+		changedID = id
+		mu.Unlock()
+	})
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer ew.Stop()
+
+	if err := os.WriteFile(workspacePath, []byte("name: new\nuser_named: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 5*time.Second, "workspace callback", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return changedID == "workspace-session"
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if attentionCalls != 0 {
+		t.Fatalf("workspace write triggered %d attention callbacks, want 0", attentionCalls)
+	}
+}
+
+func TestEventWatcher_WorkspaceReplacementOpsTriggerRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		op   fsnotify.Op
+	}{
+		{name: "create", op: fsnotify.Create},
+		{name: "remove", op: fsnotify.Remove},
+		{name: "rename", op: fsnotify.Rename},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			sessionDir := filepath.Join(dir, "workspace-session")
+			if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			var mu sync.Mutex
+			var changedID string
+			ew := NewEventWatcher(nil, 15*time.Minute, false)
+			ew.SetWorkspaceChangeHandler(func(id string) {
+				mu.Lock()
+				changedID = id
+				mu.Unlock()
+			})
+			ew.wg.Add(1)
+			go ew.debounceLoop(dir)
+			defer ew.Stop()
+
+			ew.handleEvent(fsnotify.Event{
+				Name: filepath.Join(sessionDir, "workspace.yaml"),
+				Op:   tt.op,
+			}, dir)
+
+			waitFor(t, 5*time.Second, "workspace callback", func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return changedID == "workspace-session"
+			})
+		})
+	}
+}
+
 func TestEventWatcher_DebounceCollapses(t *testing.T) {
 	dir := t.TempDir()
 	sessionDir := filepath.Join(dir, "debounce-sess")

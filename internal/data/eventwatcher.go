@@ -23,18 +23,19 @@ const eventWatcherDebounce = 50 * time.Millisecond
 const eventWatcherMaxDelay = 500 * time.Millisecond
 
 // EventWatcher monitors the Copilot CLI session-state directory for changes
-// using OS-level file system notifications (fsnotify). When events.jsonl or
-// lock files change, it re-classifies just the affected session and fires
-// the onChange callback with the session ID and new status.
+// using OS-level file system notifications (fsnotify). Event and lock-file
+// changes re-classify the affected session; workspace.yaml changes notify a
+// separate metadata callback.
 //
 // This replaces the 30-second polling approach with near-instant push
 // updates while consuming negligible CPU when idle.
 type EventWatcher struct {
-	mu       sync.Mutex
-	watcher  *fsnotify.Watcher
-	onChange func(id string, status AttentionStatus)
-	stop     chan struct{}
-	stopped  bool
+	mu                sync.Mutex
+	watcher           *fsnotify.Watcher
+	onChange          func(id string, status AttentionStatus)
+	onWorkspaceChange func(id string)
+	stop              chan struct{}
+	stopped           bool
 
 	// wg tracks the background goroutines started by Start so that Stop can
 	// wait for them. This guarantees onChange is never invoked after Stop
@@ -48,8 +49,9 @@ type EventWatcher struct {
 
 	// dirty holds session IDs awaiting re-classification. wake nudges the
 	// debounce goroutine; it is buffered so producers never block.
-	dirty map[string]struct{}
-	wake  chan struct{}
+	dirty          map[string]struct{}
+	workspaceDirty map[string]struct{}
+	wake           chan struct{}
 }
 
 // NewEventWatcher creates a watcher that monitors session-state directories
@@ -62,6 +64,7 @@ func NewEventWatcher(onChange func(id string, status AttentionStatus), threshold
 		threshold:         threshold,
 		workspaceRecovery: workspaceRecovery,
 		dirty:             make(map[string]struct{}),
+		workspaceDirty:    make(map[string]struct{}),
 		wake:              make(chan struct{}, 1),
 	}
 }
@@ -147,6 +150,13 @@ func (ew *EventWatcher) SetThreshold(d time.Duration) {
 	ew.threshold = d
 }
 
+// SetWorkspaceChangeHandler registers a callback for workspace.yaml changes.
+func (ew *EventWatcher) SetWorkspaceChangeHandler(handler func(id string)) {
+	ew.mu.Lock()
+	defer ew.mu.Unlock()
+	ew.onWorkspaceChange = handler
+}
+
 // loop is the main event processing goroutine.
 func (ew *EventWatcher) loop(stateDir string) {
 	defer ew.wg.Done()
@@ -173,8 +183,8 @@ func (ew *EventWatcher) loop(stateDir string) {
 
 // handleEvent processes a single fsnotify event.
 func (ew *EventWatcher) handleEvent(event fsnotify.Event, stateDir string) {
-	// We care about Write and Create events on files inside session dirs.
-	if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+	// We care about writes and replacement/removal events inside session dirs.
+	if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 		return
 	}
 
@@ -185,7 +195,8 @@ func (ew *EventWatcher) handleEvent(event fsnotify.Event, stateDir string) {
 	}
 
 	// Parse the relative path to extract session ID.
-	// Expected: "<sessionID>/events.jsonl" or "<sessionID>/inuse.*.lock"
+	// Expected: "<sessionID>/events.jsonl", "<sessionID>/workspace.yaml",
+	// or "<sessionID>/inuse.*.lock".
 	parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
 	if len(parts) < 2 {
 		// Might be a new directory created at the top level.
@@ -202,7 +213,10 @@ func (ew *EventWatcher) handleEvent(event fsnotify.Event, stateDir string) {
 		return
 	}
 
-	// Only react to events.jsonl and lock file changes.
+	if filename == "workspace.yaml" {
+		ew.scheduleWorkspaceChange(sessionID)
+		return
+	}
 	if filename != "events.jsonl" && !strings.HasPrefix(filename, "inuse.") {
 		return
 	}
@@ -255,6 +269,21 @@ func (ew *EventWatcher) scheduleClassify(sessionID string) {
 	select {
 	case ew.wake <- struct{}{}:
 	default: // a wake is already queued
+	}
+}
+
+func (ew *EventWatcher) scheduleWorkspaceChange(sessionID string) {
+	ew.mu.Lock()
+	if ew.stopped {
+		ew.mu.Unlock()
+		return
+	}
+	ew.workspaceDirty[sessionID] = struct{}{}
+	ew.mu.Unlock()
+
+	select {
+	case ew.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -313,8 +342,14 @@ func (ew *EventWatcher) debounceLoop(stateDir string) {
 			ids = append(ids, id)
 		}
 		clear(ew.dirty)
+		workspaceIDs := make([]string, 0, len(ew.workspaceDirty))
+		for id := range ew.workspaceDirty {
+			workspaceIDs = append(workspaceIDs, id)
+		}
+		clear(ew.workspaceDirty)
 		threshold := ew.threshold
 		wr := ew.workspaceRecovery
+		onWorkspaceChange := ew.onWorkspaceChange
 		ew.mu.Unlock()
 
 		for _, id := range ids {
@@ -327,6 +362,16 @@ func (ew *EventWatcher) debounceLoop(stateDir string) {
 			status := classifySession(filepath.Join(stateDir, id), threshold, wr)
 			if ew.onChange != nil {
 				ew.onChange(id, status)
+			}
+		}
+		for _, id := range workspaceIDs {
+			select {
+			case <-ew.stop:
+				return
+			default:
+			}
+			if onWorkspaceChange != nil {
+				onWorkspaceChange(id)
 			}
 		}
 	}

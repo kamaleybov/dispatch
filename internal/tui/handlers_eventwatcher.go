@@ -20,6 +20,16 @@ import (
 // the affected session (no full rescan), refreshes the UI, and re-subscribes
 // to the channel for the next event.
 func (m Model) handleEventWatcherUpdate(msg eventWatcherUpdateMsg) (Model, tea.Cmd) {
+	if msg.workspaceChanged {
+		var cmds []tea.Cmd
+		if m.store != nil {
+			m.store.InvalidateUserTitles()
+			cmds = append(cmds, m.loadSessionsCmdWithIndicator(false))
+		}
+		cmds = append(cmds, m.waitForEventWatcherCmd())
+		return m, tea.Batch(cmds...)
+	}
+
 	if m.attentionMap == nil {
 		m.attentionMap = make(map[string]data.AttentionStatus)
 	}

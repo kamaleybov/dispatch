@@ -162,12 +162,12 @@ type exportDoneMsg struct {
 // ---------------------------------------------------------------------------
 
 // eventWatcherUpdateMsg is pushed by the fsnotify-based EventWatcher when a
-// single session's attention status changes. This enables near-instant UI
-// updates without waiting for the 30-second polling interval.
+// single session's attention status or workspace metadata changes.
 type eventWatcherUpdateMsg struct {
-	sessionID string
-	status    data.AttentionStatus
-	lastEvent data.SessionEvent
+	sessionID        string
+	status           data.AttentionStatus
+	workspaceChanged bool
+	lastEvent        data.SessionEvent
 }
 
 // newSessionLaunchedMsg reports that a new session launch command completed.

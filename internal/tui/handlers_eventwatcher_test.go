@@ -59,6 +59,29 @@ func TestHandleEventWatcherUpdate(t *testing.T) {
 	}
 }
 
+func TestHandleEventWatcherWorkspaceChangeReloadsSessions(t *testing.T) {
+	t.Setenv("DISPATCH_SESSION_STATE", t.TempDir())
+	m := newTestModelWithSize(120, 30)
+	m.store = openBehavioralFlowStore(t)
+	m.attentionMap = map[string]data.AttentionStatus{"s1": data.AttentionWaiting}
+	initialVersion := m.sessionLoadVersion
+
+	got, cmd := m.handleEventWatcherUpdate(eventWatcherUpdateMsg{
+		sessionID:        "s1",
+		workspaceChanged: true,
+	})
+
+	if got.sessionLoadVersion != initialVersion+1 {
+		t.Fatalf("session load version = %d, want %d", got.sessionLoadVersion, initialVersion+1)
+	}
+	if got.attentionMap["s1"] != data.AttentionWaiting {
+		t.Fatalf("workspace change modified attention status: %v", got.attentionMap["s1"])
+	}
+	if cmd == nil {
+		t.Fatal("workspace change should reload sessions and re-arm the watcher")
+	}
+}
+
 func TestHandleNewSessionLaunched(t *testing.T) {
 	t.Parallel()
 
