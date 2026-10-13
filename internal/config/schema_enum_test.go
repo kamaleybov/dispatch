@@ -82,4 +82,24 @@ func TestSchemaEnumsMatchValidatorEnums(t *testing.T) {
 			t.Errorf("default_sort enum %v still advertises removed value %q", enum, v)
 		}
 	}
+
+	titleGroupsProp, ok := props["title_groups"].(map[string]any)
+	if !ok {
+		t.Fatal("schema property title_groups missing")
+	}
+	titleGroupsProps, ok := titleGroupsProp["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("title_groups has no properties object")
+	}
+	ungroupedSort, ok := titleGroupsProps["ungrouped_sort"].(map[string]any)
+	if !ok {
+		t.Fatal("title_groups.ungrouped_sort missing")
+	}
+	titleSortEnum, ok := ungroupedSort["enum"].([]string)
+	if !ok {
+		t.Fatalf("title_groups.ungrouped_sort has no string enum, got %T", ungroupedSort["enum"])
+	}
+	if len(titleSortEnum) != 2 || titleSortEnum[0] != TitleGroupSortName || titleSortEnum[1] != TitleGroupSortUpdated {
+		t.Fatalf("title group sort enum = %v, want [%s %s]", titleSortEnum, TitleGroupSortName, TitleGroupSortUpdated)
+	}
 }

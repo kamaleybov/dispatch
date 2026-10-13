@@ -412,6 +412,8 @@ func (m Model) handleSessionsLoaded(msg sessionsLoadedMsg) (Model, tea.Cmd) {
 	m.sessions = m.applySessionFilters(msg.sessions)
 	m.sortByAttention(m.sessions)
 	m.groups = nil
+	m.titleLayout = components.TitleLayout{}
+	m.titleGroupWarning = ""
 	m.syncSessionListStatuses()
 	m.refreshProjectQuickStarts()
 	m.sessionList.SetSessionsWithQuickStarts(m.sessions, m.quickStarts)
@@ -446,6 +448,8 @@ func (m Model) handleGroupsLoaded(msg groupsLoadedMsg) (Model, tea.Cmd) {
 		m.sortByAttention(m.groups[i].Sessions)
 	}
 	m.sessions = nil
+	m.titleLayout = components.TitleLayout{}
+	m.titleGroupWarning = ""
 	m.syncSessionListStatuses()
 	m.sessionList.SetPivotField(m.pivot)
 	m.refreshProjectQuickStarts()
@@ -466,6 +470,44 @@ func (m Model) handleGroupsLoaded(msg groupsLoadedMsg) (Model, tea.Cmd) {
 	)
 }
 
+func (m Model) handleTitleSessionsLoaded(msg titleSessionsLoadedMsg) (Model, tea.Cmd) {
+	if msg.version != m.sessionLoadVersion {
+		return m, nil
+	}
+	m.finishSessionLoad()
+	previousSessions := m.loadedSessions()
+	prevID := m.selectedSessionID()
+	matches := m.applySessionFilters(msg.sessions)
+	m.sortByAttention(matches)
+	result := buildTitleLayout(m.cfg.TitleGroups, msg.candidates, matches, m.hiddenSet, m.showHidden)
+	m.sessions = result.sessions
+	m.groups = nil
+	m.titleLayout = result.layout
+	m.syncSessionListStatuses()
+	m.refreshProjectQuickStarts()
+	m.sessionList.SetPivotField(m.pivot)
+	m.sessionList.SetTitleLayout(m.titleLayout, m.quickStarts)
+	if prevID != "" {
+		m.sessionList.SelectByID(prevID)
+	}
+	if m.state == stateLoading {
+		m.state = stateSessionList
+	}
+	m.searchBar.SetResultCount(m.sessionList.SessionCount())
+
+	cmds := []tea.Cmd{
+		m.refreshSelectedDetailCmd(previousSessions),
+		m.loadProjectReposCmd(),
+	}
+	warning := strings.Join(result.warnings, "; ")
+	if warning != "" && warning != m.titleGroupWarning {
+		m.statusErr = "Title grouping: " + warning
+		cmds = append(cmds, clearStatusAfter(5*time.Second))
+	}
+	m.titleGroupWarning = warning
+	return m, tea.Batch(cmds...)
+}
+
 func (m Model) handleProjectQuickStarts(msg projectQuickStartsMsg) (Model, tea.Cmd) {
 	m.projectReposLoading = false
 	if msg.err != nil {
@@ -475,7 +517,10 @@ func (m Model) handleProjectQuickStarts(msg projectQuickStartsMsg) (Model, tea.C
 	m.projectRepos = msg.repos
 	m.projectReposLoaded = true
 	m.refreshProjectQuickStarts()
-	if m.groups != nil {
+	if m.pivot == pivotTitle {
+		m.sessionList.SetPivotField(m.pivot)
+		m.sessionList.SetTitleLayout(m.titleLayout, m.quickStarts)
+	} else if m.groups != nil {
 		m.sessionList.SetPivotField(m.pivot)
 		m.sessionList.SetGroupsWithQuickStarts(m.groups, m.quickStarts)
 	} else {
@@ -813,14 +858,35 @@ func (m Model) handleDeepSearchResult(msg deepSearchResultMsg) (Model, tea.Cmd) 
 	m.search.deepSearchPending = false
 	m.filter.DeepSearch = true // keep deep mode for subsequent reloads (time range, sort, etc.)
 	m.searchBar.SetSearching(false)
-	if msg.sessions != nil {
+	warningChanged := false
+	if m.pivot == pivotTitle && msg.sessions != nil {
+		matches := m.applySessionFilters(msg.sessions)
+		m.sortByAttention(matches)
+		result := buildTitleLayout(m.cfg.TitleGroups, msg.candidates, matches, m.hiddenSet, m.showHidden)
+		m.sessions = result.sessions
+		m.groups = nil
+		m.titleLayout = result.layout
+		m.syncSessionListStatuses()
+		m.sessionList.SetPivotField(m.pivot)
+		m.sessionList.SetTitleLayout(m.titleLayout, m.quickStarts)
+		warning := strings.Join(result.warnings, "; ")
+		if warning != "" && warning != m.titleGroupWarning {
+			m.statusErr = "Title grouping: " + warning
+			warningChanged = true
+		}
+		m.titleGroupWarning = warning
+	} else if msg.sessions != nil {
 		m.sessions = m.applySessionFilters(msg.sessions)
 		m.groups = nil
+		m.titleLayout = components.TitleLayout{}
+		m.titleGroupWarning = ""
 		m.syncSessionListStatuses()
 		m.sessionList.SetSessionsWithQuickStarts(m.sessions, m.quickStarts)
 	} else if msg.groups != nil {
 		m.groups = m.applyGroupFilters(msg.groups)
 		m.sessions = nil
+		m.titleLayout = components.TitleLayout{}
+		m.titleGroupWarning = ""
 		m.syncSessionListStatuses()
 		m.sessionList.SetPivotField(m.pivot)
 		m.sessionList.SetGroupsWithQuickStarts(m.groups, m.quickStarts)
@@ -830,7 +896,11 @@ func (m Model) handleDeepSearchResult(msg deepSearchResultMsg) (Model, tea.Cmd) 
 	}
 	m.searchBar.SetResultCount(m.sessionList.SessionCount())
 	m.detailVersion++
-	return m, m.loadSelectedDetailCmd()
+	cmds := []tea.Cmd{m.loadSelectedDetailCmd()}
+	if warningChanged {
+		cmds = append(cmds, clearStatusAfter(5*time.Second))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // ----- Filter picker data --------------------------------------------------

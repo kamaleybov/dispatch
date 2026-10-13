@@ -146,6 +146,7 @@ const (
 	pivotBranch = "branch"
 	pivotDate   = "date"
 	pivotHost   = "host"
+	pivotTitle  = "title"
 )
 
 // ---------------------------------------------------------------------------
@@ -286,11 +287,12 @@ type Model struct {
 	filter    data.FilterOptions
 	sort      data.SortOptions
 	timeRange string // "1h", "1d", "7d", "all"
-	pivot     string // "none", "folder", "repo", "branch", "date", "host"
+	pivot     string // "none", "folder", "repo", "branch", "date", "host", "title"
 
 	// Loaded data.
 	sessions            []data.Session
 	groups              []data.SessionGroup
+	titleLayout         components.TitleLayout
 	quickStarts         []components.QuickStart
 	projectRepos        []components.QuickStart
 	projectReposLoaded  bool
@@ -362,6 +364,9 @@ type Model struct {
 	// Transient status bar messages.
 	statusErr  string
 	statusInfo string
+	// titleGroupWarning avoids repeating the same ambiguous-pattern warning
+	// after every auto-refresh.
+	titleGroupWarning string
 	// configLoadFailed prevents default fallback values from overwriting a
 	// malformed or unreadable user config during ordinary TUI interactions.
 	configLoadFailed bool
@@ -730,6 +735,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case groupsLoadedMsg:
 		return m.handleGroupsLoaded(msg)
+
+	case titleSessionsLoadedMsg:
+		return m.handleTitleSessionsLoaded(msg)
 
 	case sessionLoadErrorMsg:
 		return m.handleSessionLoadError(msg)
@@ -1490,6 +1498,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, keys.ExpandCollapseAll):
+		if m.pivot == pivotTitle {
+			return m, nil
+		}
 		if m.sessionList.AllExpanded() {
 			m.sessionList.CollapseAll()
 		} else {
@@ -2551,6 +2562,9 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 
 		itemIdx := m.sessionList.ScrollOffset() + listRow
+		if !m.sessionList.IsSelectableIndex(itemIdx) {
+			return m, nil
+		}
 
 		// Detect double-click: second click on the same row while a
 		// pending single-click timer is still running.
@@ -2832,7 +2846,7 @@ func (m Model) badgeClickAction(x int) string {
 	cursor += pw + 2
 
 	// Expand/collapse all indicator — only in tree mode.
-	if m.pivot != pivotNone {
+	if m.pivot != pivotNone && m.pivot != pivotTitle {
 		expandIcon := styles.IconExpandAll()
 		if m.sessionList.AllExpanded() {
 			expandIcon = styles.IconCollapseAll()
@@ -3044,7 +3058,7 @@ func (m Model) renderBadges() string {
 	parts = append(parts, m.renderGroupBadge())
 
 	// Expand/collapse all indicator — only shown in tree mode.
-	if m.pivot != pivotNone {
+	if m.pivot != pivotNone && m.pivot != pivotTitle {
 		parts = append(parts, m.renderExpandBadge())
 	}
 
@@ -3694,6 +3708,9 @@ func (m *Model) sortSessionsLocally(sessions []data.Session, sortOpts data.SortO
 }
 
 func (m *Model) previewCurrentSort() {
+	if m.pivot == pivotTitle {
+		return
+	}
 	prevID := m.selectedSessionID()
 	if m.groups != nil {
 		sessionSort := groupedSessionSort(m.pivot, m.sort)
@@ -3714,6 +3731,9 @@ func (m *Model) previewCurrentSort() {
 }
 
 func (m *Model) previewCurrentPivot() {
+	if m.pivot == pivotTitle {
+		return
+	}
 	sessions := m.sessions
 	if m.groups != nil {
 		sessions = sessionsFromGroups(m.groups)
@@ -3821,7 +3841,7 @@ func (m *Model) toggleSortOrder() {
 	m.previewCurrentSort()
 }
 
-var pivotModes = []string{pivotNone, pivotFolder, pivotRepo, pivotBranch, pivotDate, pivotHost}
+var pivotModes = []string{pivotNone, pivotFolder, pivotRepo, pivotBranch, pivotDate, pivotHost, pivotTitle}
 
 func (m *Model) cyclePivot() {
 	for i, p := range pivotModes {
@@ -4325,10 +4345,32 @@ func (m *Model) loadSessionsCmdWithIndicator(showIndicator bool) tea.Cmd {
 	}
 	pivot := m.pivot
 	version := m.sessionLoadVersion
+	hasTitleGroups := m.cfg.TitleGroups != nil && len(m.cfg.TitleGroups.Groups) > 0
 
 	return func() tea.Msg {
 		if store == nil {
 			return sessionLoadErrorMsg{err: errors.New("store not available"), version: version}
+		}
+		if pivot == pivotTitle {
+			sessions, err := store.ListSessions(ctx, filter, sortOpts, limit)
+			if err != nil {
+				return sessionLoadErrorMsg{err: err, version: version}
+			}
+			candidates := sessions
+			if hasTitleGroups {
+				candidateFilter := data.FilterOptions{
+					ExcludedDirs:  filter.ExcludedDirs,
+					ExcludedWords: filter.ExcludedWords,
+				}
+				candidates, err = store.ListSessions(ctx, candidateFilter, data.SortOptions{
+					Field: data.SortByUpdated,
+					Order: data.Descending,
+				}, -1)
+				if err != nil {
+					return sessionLoadErrorMsg{err: err, version: version}
+				}
+			}
+			return titleSessionsLoadedMsg{sessions: sessions, candidates: candidates, version: version}
 		}
 		if pivot != pivotNone {
 			pf := pivotFieldFromString(pivot)
@@ -4787,10 +4829,32 @@ func (m Model) deepSearchCmd(version int) tea.Cmd {
 		limit = -1
 	}
 	pivot := m.pivot
+	hasTitleGroups := m.cfg.TitleGroups != nil && len(m.cfg.TitleGroups.Groups) > 0
 
 	return func() tea.Msg {
 		if store == nil {
 			return nil
+		}
+		if pivot == pivotTitle {
+			sessions, err := store.ListSessions(context.Background(), filter, sortOpts, limit)
+			if err != nil {
+				return dataErrorMsg{err: err}
+			}
+			candidates := sessions
+			if hasTitleGroups {
+				candidateFilter := data.FilterOptions{
+					ExcludedDirs:  filter.ExcludedDirs,
+					ExcludedWords: filter.ExcludedWords,
+				}
+				candidates, err = store.ListSessions(context.Background(), candidateFilter, data.SortOptions{
+					Field: data.SortByUpdated,
+					Order: data.Descending,
+				}, -1)
+				if err != nil {
+					return dataErrorMsg{err: err}
+				}
+			}
+			return deepSearchResultMsg{version: version, sessions: sessions, candidates: candidates}
 		}
 		if pivot != pivotNone {
 			pf := pivotFieldFromString(pivot)

@@ -1513,6 +1513,14 @@ func TestNamedView_Validate_Valid(t *testing.T) {
 	}
 }
 
+func TestNamedView_Validate_TitlePivot(t *testing.T) {
+	t.Parallel()
+	v := NamedView{Name: "Hierarchy", Pivot: PivotTitle}
+	if err := v.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
 func TestNamedView_Validate_EmptyName(t *testing.T) {
 	t.Parallel()
 	v := NamedView{Name: ""}

@@ -1371,6 +1371,77 @@ func TestRenderSessionRow_TreeModeIndent(t *testing.T) {
 	}
 }
 
+func TestSessionListTitleLayoutNavigationAndSpacing(t *testing.T) {
+	t.Parallel()
+
+	sl := NewSessionList()
+	sl.SetTitleLayout(TitleLayout{
+		Groups: []TitleGroup{
+			{
+				Parent:    data.Session{ID: "parent", Summary: "Project"},
+				HasParent: true,
+				Children:  []data.Session{{ID: "child", Summary: "Project child"}},
+			},
+			{
+				Header:   "Other",
+				Children: []data.Session{{ID: "other", Summary: "Other session"}},
+			},
+		},
+	}, nil)
+	sl.SetSize(80, 8)
+
+	if got := sl.SessionCount(); got != 3 {
+		t.Fatalf("SessionCount = %d, want 3", got)
+	}
+	if selected, ok := sl.Selected(); !ok || selected.ID != "parent" {
+		t.Fatalf("initial selection = %#v, %v; want parent", selected, ok)
+	}
+
+	sl.MoveDown()
+	if selected, ok := sl.Selected(); !ok || selected.ID != "child" {
+		t.Fatalf("first MoveDown selection = %#v, %v; want child", selected, ok)
+	}
+	sl.MoveDown()
+	if selected, ok := sl.Selected(); !ok || selected.ID != "other" {
+		t.Fatalf("second MoveDown selection = %#v, %v; want other", selected, ok)
+	}
+
+	lines := strings.Split(sl.View(), "\n")
+	if strings.TrimSpace(stripAnsi(lines[2])) != "" {
+		t.Fatalf("separator line = %q, want blank", stripAnsi(lines[2]))
+	}
+	if !strings.Contains(stripAnsi(lines[3]), "Other (1)") {
+		t.Fatalf("synthetic header = %q, want Other count", stripAnsi(lines[3]))
+	}
+	if !strings.HasPrefix(stripAnsi(lines[1]), "  ") || !strings.HasPrefix(stripAnsi(lines[4]), "  ") {
+		t.Fatalf("title-group children are not indented: %q / %q", stripAnsi(lines[1]), stripAnsi(lines[4]))
+	}
+	if sl.IsSelectableIndex(2) || sl.IsSelectableIndex(3) {
+		t.Fatal("separator and synthetic header must not be selectable")
+	}
+}
+
+func TestSessionListTitleLayoutCountsContextParentAsSession(t *testing.T) {
+	t.Parallel()
+
+	sl := NewSessionList()
+	sl.SetTitleLayout(TitleLayout{
+		Groups: []TitleGroup{{
+			Parent:        data.Session{ID: "parent", Summary: "Project"},
+			HasParent:     true,
+			ParentContext: true,
+			Children:      []data.Session{{ID: "child", Summary: "Matching child"}},
+		}},
+	}, nil)
+
+	if got := sl.SessionCount(); got != 2 {
+		t.Fatalf("SessionCount = %d, want parent and child sessions", got)
+	}
+	if selected, ok := sl.Selected(); !ok || selected.ID != "parent" {
+		t.Fatalf("context parent should remain selectable: %#v, %v", selected, ok)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Selector column: all 4 states
 // ---------------------------------------------------------------------------

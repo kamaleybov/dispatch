@@ -850,7 +850,7 @@ func TestCyclePivot(t *testing.T) {
 	m := newTestModel()
 	m.pivot = pivotNone
 
-	expected := []string{pivotFolder, pivotRepo, pivotBranch, pivotDate, pivotHost, pivotNone}
+	expected := []string{pivotFolder, pivotRepo, pivotBranch, pivotDate, pivotHost, pivotTitle, pivotNone}
 	for _, exp := range expected {
 		m.cyclePivot()
 		if m.pivot != exp {

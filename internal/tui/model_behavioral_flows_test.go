@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jongio/dispatch/internal/config"
 	"github.com/jongio/dispatch/internal/data"
 	"github.com/jongio/dispatch/internal/platform"
 )
@@ -319,6 +320,29 @@ func TestAsyncStoreCommandsReturnBehavioralResults(t *testing.T) {
 	flat := m.loadSessionsCmd()().(sessionsLoadedMsg)
 	if len(flat.sessions) != 5 || flat.sessions[0].ID == "" {
 		t.Fatalf("flat sessions = %#v", flat.sessions)
+	}
+
+	titleModel := newBehavioralFlowModel(t)
+	titleModel.store = store
+	titleModel.pivot = pivotTitle
+	titleModel.filter.Query = "Session 1"
+	titleModel.cfg.TitleGroups = &config.TitleGroupsConfig{Groups: []config.TitleGroupRule{{
+		ParentPattern: `^Session 0 summary$`,
+		ChildPattern:  `^Session 1 summary$`,
+	}}}
+	titleMsg, ok := titleModel.loadSessionsCmd()().(titleSessionsLoadedMsg)
+	if !ok {
+		t.Fatalf("title load returned unexpected message type")
+	}
+	if len(titleMsg.sessions) != 1 || len(titleMsg.candidates) != 5 {
+		t.Fatalf("title load matches/candidates = %d/%d, want 1/5", len(titleMsg.sessions), len(titleMsg.candidates))
+	}
+	titleResult, _ := titleModel.Update(titleMsg)
+	titleLoaded := titleResult.(Model)
+	if len(titleLoaded.titleLayout.Groups) != 1 ||
+		!titleLoaded.titleLayout.Groups[0].ParentContext ||
+		titleLoaded.sessionList.SessionCount() != 2 {
+		t.Fatalf("title layout did not retain parent context: %#v", titleLoaded.titleLayout)
 	}
 
 	m.pivot = pivotFolder

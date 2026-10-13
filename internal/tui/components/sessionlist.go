@@ -17,18 +17,39 @@ import (
 // ---------------------------------------------------------------------------
 
 type displayItem struct {
-	isFolder     bool
-	isQuickStart bool
-	folderPath   string       // non-empty for folder items
-	count        int          // session count for folder items
-	session      data.Session // populated for session items
-	quickStart   QuickStart   // populated for quick-start items
+	isFolder      bool
+	isQuickStart  bool
+	isTitleHeader bool
+	isSeparator   bool
+	folderPath    string       // non-empty for folder items
+	title         string       // non-empty for synthetic title headers
+	count         int          // session count for folder/header items
+	indent        int          // hierarchy depth for session/quick-start rows
+	contextOnly   bool         // parent shown only to provide filtered context
+	session       data.Session // populated for session items
+	quickStart    QuickStart   // populated for quick-start items
 }
 
 // QuickStart describes a git repository row that starts a new session.
 type QuickStart struct {
 	Name string
 	Path string
+}
+
+// TitleGroup is one rendered block in the title pivot. A group has either a
+// real parent session or a synthetic header such as "Other".
+type TitleGroup struct {
+	Header        string
+	Parent        data.Session
+	HasParent     bool
+	ParentContext bool
+	Children      []data.Session
+}
+
+// TitleLayout is the complete, ordered title-pivot list.
+type TitleLayout struct {
+	Groups    []TitleGroup
+	Ungrouped []data.Session
 }
 
 const quickStartGroupLabel = "New sessions"
@@ -145,6 +166,70 @@ func (s *SessionList) SetGroupsWithQuickStarts(groups []data.SessionGroup, quick
 	s.rebuildVisible()
 }
 
+// SetTitleLayout replaces the list with non-collapsible title groups. Blank
+// separator rows and synthetic headers are visible but never selectable.
+func (s *SessionList) SetTitleLayout(layout TitleLayout, quickStarts []QuickStart) {
+	s.allItems = nil
+	s.selected = make(map[string]struct{})
+
+	appendSeparator := func() {
+		if len(s.allItems) > 0 && !s.allItems[len(s.allItems)-1].isSeparator {
+			s.allItems = append(s.allItems, displayItem{isSeparator: true})
+		}
+	}
+
+	for _, group := range layout.Groups {
+		if !group.HasParent && group.Header == "" {
+			continue
+		}
+		appendSeparator()
+		if group.HasParent {
+			s.allItems = append(s.allItems, displayItem{
+				session:     group.Parent,
+				contextOnly: group.ParentContext,
+			})
+		} else {
+			s.allItems = append(s.allItems, displayItem{
+				isTitleHeader: true,
+				title:         group.Header,
+				count:         len(group.Children),
+			})
+		}
+		for _, sess := range group.Children {
+			s.allItems = append(s.allItems, displayItem{session: sess, indent: 1})
+		}
+	}
+
+	if len(layout.Ungrouped) > 0 {
+		appendSeparator()
+		for _, sess := range layout.Ungrouped {
+			s.allItems = append(s.allItems, displayItem{session: sess})
+		}
+	}
+
+	if len(quickStarts) > 0 {
+		appendSeparator()
+		s.allItems = append(s.allItems, displayItem{
+			isTitleHeader: true,
+			title:         quickStartGroupLabel,
+			count:         len(quickStarts),
+		})
+		for _, qs := range quickStarts {
+			if qs.Path == "" {
+				continue
+			}
+			s.allItems = append(s.allItems, displayItem{
+				isQuickStart: true,
+				quickStart:   qs,
+				indent:       1,
+			})
+		}
+	}
+
+	s.treeMode = false
+	s.rebuildVisible()
+}
+
 // applyDefaultExpansion expands a group the first time it is displayed and
 // leaves the user's choice alone on every later reload.
 func (s *SessionList) applyDefaultExpansion(label string) {
@@ -251,21 +336,29 @@ func (s *SessionList) SetSize(w, h int) {
 
 // MoveUp moves the cursor to the previous visible item.
 func (s *SessionList) MoveUp() {
-	if s.cursor > 0 {
-		s.cursor--
+	for idx := s.cursor - 1; idx >= 0; idx-- {
+		if !s.IsSelectableIndex(idx) {
+			continue
+		}
+		s.cursor = idx
 		if s.cursor < s.scrollOffset {
 			s.scrollOffset = s.cursor
 		}
+		return
 	}
 }
 
 // MoveDown moves the cursor to the next visible item.
 func (s *SessionList) MoveDown() {
-	if s.cursor < len(s.visItems)-1 {
-		s.cursor++
+	for idx := s.cursor + 1; idx < len(s.visItems); idx++ {
+		if !s.IsSelectableIndex(idx) {
+			continue
+		}
+		s.cursor = idx
 		if s.height > 0 && s.cursor >= s.scrollOffset+s.height {
 			s.scrollOffset = s.cursor - s.height + 1
 		}
+		return
 	}
 }
 
@@ -280,6 +373,9 @@ func (s *SessionList) MoveTo(idx int) {
 	if idx < 0 {
 		return
 	}
+	if !s.IsSelectableIndex(idx) {
+		return
+	}
 	s.cursor = idx
 	if s.cursor < s.scrollOffset {
 		s.scrollOffset = s.cursor
@@ -291,12 +387,22 @@ func (s *SessionList) MoveTo(idx int) {
 
 // JumpToTop moves the cursor to the first visible item.
 func (s *SessionList) JumpToTop() {
-	s.MoveTo(0)
+	for idx := range s.visItems {
+		if s.IsSelectableIndex(idx) {
+			s.MoveTo(idx)
+			return
+		}
+	}
 }
 
 // JumpToBottom moves the cursor to the last visible item.
 func (s *SessionList) JumpToBottom() {
-	s.MoveTo(len(s.visItems) - 1)
+	for idx := len(s.visItems) - 1; idx >= 0; idx-- {
+		if s.IsSelectableIndex(idx) {
+			s.MoveTo(idx)
+			return
+		}
+	}
 }
 
 // ScrollBy adjusts the scroll offset by delta lines (positive = down).
@@ -314,10 +420,20 @@ func (s *SessionList) ScrollBy(delta int) {
 	}
 	// Keep cursor in the visible window.
 	if s.cursor < s.scrollOffset {
-		s.cursor = s.scrollOffset
+		for idx := s.scrollOffset; idx < len(s.visItems); idx++ {
+			if s.IsSelectableIndex(idx) {
+				s.cursor = idx
+				break
+			}
+		}
 	}
 	if s.height > 0 && s.cursor >= s.scrollOffset+s.height {
-		s.cursor = s.scrollOffset + s.height - 1
+		for idx := s.scrollOffset + s.height - 1; idx >= s.scrollOffset; idx-- {
+			if s.IsSelectableIndex(idx) {
+				s.cursor = idx
+				break
+			}
+		}
 	}
 }
 
@@ -334,19 +450,7 @@ func (s *SessionList) Cursor() int {
 // SetCursor moves the cursor to the given visible-item index, clamping
 // to valid bounds and adjusting the scroll offset.
 func (s *SessionList) SetCursor(idx int) {
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(s.visItems) {
-		idx = len(s.visItems) - 1
-	}
-	s.cursor = idx
-	if s.cursor < s.scrollOffset {
-		s.scrollOffset = s.cursor
-	}
-	if s.height > 0 && s.cursor >= s.scrollOffset+s.height {
-		s.scrollOffset = s.cursor - s.height + 1
-	}
+	s.MoveTo(idx)
 }
 
 // AllSessions returns a flat slice of all sessions in display order
@@ -356,7 +460,7 @@ func (s *SessionList) AllSessions() []data.Session {
 	out := make([]data.Session, 0, len(s.visItems))
 	for _, idx := range s.visItems {
 		item := s.allItems[idx]
-		if !item.isFolder && !item.isQuickStart {
+		if isSessionItem(item) {
 			out = append(out, item.session)
 		}
 	}
@@ -369,7 +473,7 @@ func (s *SessionList) VisibleSessionIDs() []string {
 	out := make([]string, 0, len(s.visItems))
 	for _, idx := range s.visItems {
 		item := s.allItems[idx]
-		if !item.isFolder && !item.isQuickStart {
+		if isSessionItem(item) {
 			out = append(out, item.session.ID)
 		}
 	}
@@ -381,7 +485,7 @@ func (s *SessionList) VisibleSessionIDs() []string {
 func (s *SessionList) SelectByID(id string) bool {
 	for i, idx := range s.visItems {
 		item := s.allItems[idx]
-		if !item.isFolder && !item.isQuickStart && item.session.ID == id {
+		if isSessionItem(item) && item.session.ID == id {
 			s.MoveTo(i)
 			return true
 		}
@@ -400,7 +504,7 @@ func (s *SessionList) FindNextWaiting(attentionMap map[string]data.AttentionStat
 	for i := 1; i <= n; i++ {
 		vi := (s.cursor + i) % n
 		item := s.allItems[s.visItems[vi]]
-		if item.isFolder || item.isQuickStart {
+		if !isSessionItem(item) {
 			continue
 		}
 		if status, ok := attentionMap[item.session.ID]; ok && status == data.AttentionWaiting {
@@ -413,6 +517,15 @@ func (s *SessionList) FindNextWaiting(attentionMap map[string]data.AttentionStat
 // VisibleCount returns the number of currently visible items.
 func (s *SessionList) VisibleCount() int {
 	return len(s.visItems)
+}
+
+// IsSelectableIndex reports whether a visible row can receive cursor focus.
+func (s *SessionList) IsSelectableIndex(idx int) bool {
+	if idx < 0 || idx >= len(s.visItems) {
+		return false
+	}
+	item := s.allItems[s.visItems[idx]]
+	return !item.isSeparator && !item.isTitleHeader
 }
 
 // ToggleFolder expands or collapses the folder under the cursor.
@@ -544,7 +657,7 @@ func (s *SessionList) Selected() (data.Session, bool) {
 		return data.Session{}, false
 	}
 	item := s.allItems[s.visItems[s.cursor]]
-	if item.isFolder || item.isQuickStart {
+	if !isSessionItem(item) {
 		return data.Session{}, false
 	}
 	return item.session, true
@@ -566,7 +679,7 @@ func (s *SessionList) SelectedQuickStart() (QuickStart, bool) {
 func (s *SessionList) SessionCount() int {
 	n := 0
 	for _, it := range s.allItems {
-		if !it.isFolder && !it.isQuickStart {
+		if isSessionItem(it) {
 			n++
 		}
 	}
@@ -580,7 +693,7 @@ func (s *SessionList) ToggleSelected() bool {
 		return false
 	}
 	item := s.allItems[s.visItems[s.cursor]]
-	if item.isFolder || item.isQuickStart {
+	if !isSessionItem(item) {
 		return false
 	}
 	id := item.session.ID
@@ -596,7 +709,7 @@ func (s *SessionList) ToggleSelected() bool {
 func (s *SessionList) SelectAll() {
 	for _, vi := range s.visItems {
 		item := s.allItems[vi]
-		if !item.isFolder && !item.isQuickStart {
+		if isSessionItem(item) {
 			s.selected[item.session.ID] = struct{}{}
 		}
 	}
@@ -631,7 +744,7 @@ func (s *SessionList) SelectRange(from, to int) {
 			continue
 		}
 		item := s.allItems[s.visItems[i]]
-		if !item.isFolder && !item.isQuickStart {
+		if isSessionItem(item) {
 			s.selected[item.session.ID] = struct{}{}
 		}
 	}
@@ -690,7 +803,7 @@ func (s *SessionList) SelectedSessions() []data.Session {
 	var result []data.Session
 	for _, vi := range s.visItems {
 		item := s.allItems[vi]
-		if !item.isFolder && !item.isQuickStart {
+		if isSessionItem(item) {
 			if _, ok := s.selected[item.session.ID]; ok {
 				result = append(result, item.session)
 			}
@@ -744,14 +857,18 @@ func (s SessionList) View() string {
 		selected := vi == s.cursor
 
 		var row string
-		if item.isFolder {
+		if item.isSeparator {
+			row = s.pad()
+		} else if item.isTitleHeader {
+			row = s.renderTitleHeaderRow(item)
+		} else if item.isFolder {
 			row = s.renderFolderRow(item, selected)
 		} else if item.isQuickStart {
-			row = s.renderQuickStartRow(item.quickStart, selected)
+			row = s.renderQuickStartRow(item.quickStart, selected, item.indent)
 		} else {
 			_, hidden := s.hiddenSet[item.session.ID]
 			_, favorited := s.favoritedSet[item.session.ID]
-			row = s.renderSessionRow(item.session, selected, hidden, favorited)
+			row = s.renderSessionRow(item.session, selected, hidden, favorited, item.indent, item.contextOnly)
 		}
 		physicalLines += writePhysicalLines(&view, row, s.height-physicalLines)
 	}
@@ -803,6 +920,24 @@ func (s *SessionList) rebuildVisible() {
 	if s.cursor < 0 {
 		s.cursor = 0
 	}
+	if !s.IsSelectableIndex(s.cursor) {
+		found := false
+		for idx := s.cursor; idx < len(s.visItems); idx++ {
+			if s.IsSelectableIndex(idx) {
+				s.cursor = idx
+				found = true
+				break
+			}
+		}
+		if !found {
+			for idx := s.cursor - 1; idx >= 0; idx-- {
+				if s.IsSelectableIndex(idx) {
+					s.cursor = idx
+					break
+				}
+			}
+		}
+	}
 	// Adjust scroll.
 	if s.scrollOffset > s.cursor {
 		s.scrollOffset = s.cursor
@@ -810,6 +945,18 @@ func (s *SessionList) rebuildVisible() {
 	if s.height > 0 && s.cursor >= s.scrollOffset+s.height {
 		s.scrollOffset = s.cursor - s.height + 1
 	}
+}
+
+func isSessionItem(item displayItem) bool {
+	return !item.isFolder && !item.isQuickStart && !item.isTitleHeader && !item.isSeparator
+}
+
+func (s SessionList) renderTitleHeaderRow(item displayItem) string {
+	label := item.title
+	if item.count > 0 {
+		label += " (" + strconv.Itoa(item.count) + ")"
+	}
+	return styles.GroupHeaderStyle.Render(PadToWidth("   "+Truncate(label, max(4, s.width-3)), s.width))
 }
 
 func (s SessionList) renderFolderRow(item displayItem, selected bool) string {
@@ -857,7 +1004,14 @@ func hostGroupLabel(hostType string) string {
 	}
 }
 
-func (s SessionList) renderSessionRow(sess data.Session, selected bool, hidden bool, favorited bool) string {
+func (s SessionList) renderSessionRow(
+	sess data.Session,
+	selected bool,
+	hidden bool,
+	favorited bool,
+	depth int,
+	contextOnly bool,
+) string {
 	w := s.width
 	if w <= 0 {
 		return ""
@@ -927,8 +1081,11 @@ func (s SessionList) renderSessionRow(sess data.Session, selected bool, hidden b
 	// In tree mode, indent sessions under their folder.
 	indent := ""
 	if s.treeMode {
-		indent = "  "
-		w -= 2
+		depth = max(depth, 1)
+	}
+	if depth > 0 {
+		indent = strings.Repeat("  ", depth)
+		w -= lipgloss.Width(indent)
 	}
 
 	const selectorW = 2
@@ -973,7 +1130,7 @@ func (s SessionList) renderSessionRow(sess data.Session, selected bool, hidden b
 	if w < 50 {
 		summaryW := max(10, w-selectorW-dotW-hostDotW-planDotW-noteDotW-tagDotW-wrkDotW-gitDotW-timeW-spacing)
 		line := indent + selector + attDot + hostDot + plnDot + ntDot + tgDot + wrkDot + gitDot + PadRight(summary, summaryW) + "  " + PadLeft(relTime, timeW)
-		return s.applyRowStyle(line, selected, hidden, favorited, isWaiting)
+		return s.applyRowStyleWithContext(line, selected, hidden, favorited, isWaiting, contextOnly)
 	}
 
 	// Show folder/repo columns at wider terminals, honouring column visibility.
@@ -1045,18 +1202,21 @@ func (s SessionList) renderSessionRow(sess data.Session, selected bool, hidden b
 		b.WriteString(PadLeft(turns, turnsW))
 	}
 
-	return s.applyRowStyle(b.String(), selected, hidden, favorited, isWaiting)
+	return s.applyRowStyleWithContext(b.String(), selected, hidden, favorited, isWaiting, contextOnly)
 }
 
-func (s SessionList) renderQuickStartRow(qs QuickStart, selected bool) string {
+func (s SessionList) renderQuickStartRow(qs QuickStart, selected bool, depth int) string {
 	w := s.width
 	if w <= 0 {
 		return ""
 	}
 	indent := ""
 	if s.treeMode {
-		indent = "  "
-		w -= 2
+		depth = max(depth, 1)
+	}
+	if depth > 0 {
+		indent = strings.Repeat("  ", depth)
+		w -= lipgloss.Width(indent)
 	}
 	selector := "  "
 	if selected {
@@ -1093,6 +1253,10 @@ func (s SessionList) renderQuickStartRow(qs QuickStart, selected bool) string {
 
 // applyRowStyle renders a row line with the appropriate style based on state.
 func (s SessionList) applyRowStyle(line string, selected, hidden, favorited, waiting bool) string {
+	return s.applyRowStyleWithContext(line, selected, hidden, favorited, waiting, false)
+}
+
+func (s SessionList) applyRowStyleWithContext(line string, selected, hidden, favorited, waiting, contextOnly bool) string {
 	if selected {
 		return styles.SelectedStyle.Render(PadToWidth(ansi.Strip(line), s.width))
 	}
@@ -1102,6 +1266,9 @@ func (s SessionList) applyRowStyle(line string, selected, hidden, favorited, wai
 	}
 	if hidden {
 		return styles.HiddenStyle.Render(padded)
+	}
+	if contextOnly {
+		return styles.DimmedStyle.Render(padded)
 	}
 	if favorited {
 		return styles.FavoritedStyle.Render(padded)

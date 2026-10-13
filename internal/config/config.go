@@ -56,7 +56,7 @@ type NamedView struct {
 	// SortOrder is the sort direction ("asc" or "desc").
 	SortOrder string `json:"sort_order,omitempty"`
 
-	// Pivot is the grouping mode (e.g. "none", "folder", "repo", "branch", "date", "host").
+	// Pivot is the grouping mode (e.g. "none", "folder", "repo", "branch", "date", "host", "title").
 	Pivot string `json:"pivot,omitempty"`
 
 	// FavoritesOnly restricts the list to favorited sessions.
@@ -67,6 +67,23 @@ type NamedView struct {
 
 	// ExcludedDirs overrides the global excluded directories for this view.
 	ExcludedDirs []string `json:"excluded_dirs,omitempty"`
+}
+
+// TitleGroupRule defines one ordered group in the title pivot. Regular rules
+// identify a real parent session and optionally assign child sessions. A
+// remaining rule creates a synthetic group for every session left unclaimed.
+type TitleGroupRule struct {
+	ParentPattern string `json:"parent_pattern,omitempty"`
+	ChildPattern  string `json:"child_pattern,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Remaining     bool   `json:"remaining,omitempty"`
+	SortBy        string `json:"sort_by,omitempty"`
+}
+
+// TitleGroupsConfig configures the title pivot hierarchy.
+type TitleGroupsConfig struct {
+	Groups        []TitleGroupRule `json:"groups,omitempty"`
+	UngroupedSort string           `json:"ungrouped_sort,omitempty"`
 }
 
 // LaunchSet holds a named, ordered group of session IDs that can be launched
@@ -108,7 +125,7 @@ func (v *NamedView) Validate() error {
 	}
 	if v.Pivot != "" {
 		switch v.Pivot {
-		case PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost:
+		case PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost, PivotTitle:
 		default:
 			return fmt.Errorf("named view %q: invalid pivot %q", v.Name, v.Pivot)
 		}
@@ -321,6 +338,10 @@ type Config struct {
 	// filter/sort/pivot settings that can be applied together.
 	Views []NamedView `json:"views,omitempty"`
 
+	// TitleGroups defines the ordered parent/child rules used by the title
+	// pivot. It is shared by every named view that selects that pivot.
+	TitleGroups *TitleGroupsConfig `json:"title_groups,omitempty"`
+
 	// LaunchSets is a list of named, ordered session ID collections that can
 	// be relaunched together from the TUI.
 	LaunchSets []LaunchSet `json:"launch_sets,omitempty"`
@@ -406,6 +427,12 @@ const (
 	SortFieldFolder  = "folder"
 )
 
+// Title group sort constants.
+const (
+	TitleGroupSortName    = "name"
+	TitleGroupSortUpdated = "updated"
+)
+
 const legacySortFieldFrecency = "frecency"
 
 // Pivot mode constants for NamedView.Pivot.
@@ -416,6 +443,7 @@ const (
 	PivotBranch = "branch"
 	PivotDate   = "date"
 	PivotHost   = "host"
+	PivotTitle  = "title"
 )
 
 // EffectivePaneDirection returns the configured pane direction, defaulting

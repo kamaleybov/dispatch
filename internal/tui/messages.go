@@ -26,6 +26,11 @@ type (
 		groups  []data.SessionGroup
 		version int
 	}
+	titleSessionsLoadedMsg struct {
+		sessions   []data.Session
+		candidates []data.Session
+		version    int
+	}
 	sessionDetailMsg struct {
 		detail  *data.SessionDetail
 		related []components.RelatedSessionItem
@@ -79,9 +84,10 @@ type deepSearchTickMsg struct {
 
 // Deep search results — carries version for staleness check.
 type deepSearchResultMsg struct {
-	version  int
-	sessions []data.Session
-	groups   []data.SessionGroup
+	version    int
+	sessions   []data.Session
+	groups     []data.SessionGroup
+	candidates []data.Session
 }
 
 // ---------------------------------------------------------------------------

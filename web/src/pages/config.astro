@@ -55,7 +55,7 @@ import ConfigTable from '../components/ConfigTable.astro';
         { key: 'default_time_range', type: 'string', default: '"1d"', description: 'Time filter on startup: 1h, 1d, 7d, all.' },
         { key: 'default_sort', type: 'string', default: '"updated"', description: 'Sort field: updated, created, turns, name, or folder.' },
         { key: 'default_sort_order', type: 'string', default: '"desc"', description: 'Sort direction: asc, desc.' },
-        { key: 'default_pivot', type: 'string', default: '"folder"', description: 'Grouping mode: none, folder, repo, branch, date, host.' },
+        { key: 'default_pivot', type: 'string', default: '"folder"', description: 'Grouping mode: none, folder, repo, branch, date, host, title.' },
         { key: 'default_collapsed', type: 'bool', default: 'false', description: 'Start group header rows collapsed (single-line).' },
         { key: 'show_preview', type: 'bool', default: 'true', description: 'Show preview pane on startup.' },
         { key: 'preview_position', type: 'string', default: '"right"', description: 'Position of the preview pane: right, bottom, left, top.' },
@@ -78,10 +78,44 @@ import ConfigTable from '../components/ConfigTable.astro';
         { key: 'workspace_recovery', type: 'bool', default: 'true', description: 'Detect sessions interrupted by crash/reboot. Disable if you see false positives.' },
         { key: 'hidden_columns', type: 'array', default: '[]', description: 'Optional session-list columns to hide (repo, folder, turns, host). Empty shows every column.' },
         { key: 'keybindings', type: 'object', default: '{}', description: 'Remap keyboard shortcuts. Keys are action names; values are comma-separated key lists (see the Keys page).' },
+        { key: 'title_groups', type: 'object', default: '(unset)', description: 'Ordered regular-expression parent/child rules used by the title grouping mode.' },
         { key: 'launch_sets', type: 'array', default: '[]', description: 'Named, ordered session ID collections for repeated multi-session launches. Missing IDs are shown and skipped.' },
         { key: 'project_roots', type: 'array', default: '[]', description: 'Absolute directories to scan for git repos shown as New session rows when they have no recent session.' },
         { key: 'favoriteSessions', type: 'array', default: '[]', description: 'Session IDs starred as favorites.' },
       ]} />
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>Title Grouping</h2>
+      <p>
+        Set <code>default_pivot</code> (or a named view's <code>pivot</code>) to
+        <code>"title"</code> to arrange sessions under real parent sessions selected by title patterns.
+        Rules are ordered, always expanded, and separated by a blank row.
+      </p>
+      <pre><code>{`"title_groups": {
+  "groups": [
+    { "parent_pattern": "^Journal$" },
+    {
+      "parent_pattern": "^p0--operations$",
+      "child_pattern": "^p0-i[0-9]+--",
+      "sort_by": "name"
+    },
+    {
+      "title": "Other",
+      "remaining": true,
+      "sort_by": "updated"
+    }
+  ],
+  "ungrouped_sort": "updated"
+}`}</code></pre>
+      <p>
+        Parent patterns must match exactly one session. <code>sort_by</code> and
+        <code>ungrouped_sort</code> accept <code>"name"</code> or <code>"updated"</code>.
+        Without a remaining group, unmatched sessions stay as top-level rows after the configured groups.
+        Hiding a parent suppresses its title-group children; filtering a child can retain its parent as dimmed context.
+      </p>
     </div>
   </section>
 

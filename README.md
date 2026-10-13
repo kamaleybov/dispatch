@@ -22,7 +22,7 @@ Dispatch reads your local Copilot CLI session store and presents every past sess
 - **Directory filtering** (`f`) — hierarchical tree panel for toggling directory exclusion, persisted to config
 - **Word filtering** (Settings panel) — comma-separated list of words to exclude sessions by content. Sessions whose summary, conversation turns, or checkpoint content contain any excluded word are hidden from the list. Matching is case-insensitive (including accented and non-Latin text) and matches the phrase as displayed in the list, so line breaks in the stored text do not break a multi-word phrase. Each comma-separated entry is one phrase, so `Task, Invoke` excludes either word while `Task Invoke` excludes only the phrase
 - **Sorting** (`s` / `S`) — 4 fields (updated, folder, name, attention) with toggleable direction. Sort applies within each group; configuration also accepts the legacy `created` and `turns` values
-- **Grouping modes** (`Tab`) — list, folder, repo, branch, date, host. Displayed as collapsible trees with session counts
+- **Grouping modes** (`Tab`) — list, folder, repo, branch, date, host, and configurable title hierarchies. Built-in metadata groups are collapsible; title groups keep their real parent sessions directly selectable
 - **Time range filtering** (`1`–`4`) — 1 hour, 1 day, 7 days, all
 - **Preview panel** (`p`) — metadata, chat-style conversation bubbles, checkpoints (up to 5), files (up to 5), refs (up to 5), scroll indicators. Active search terms are highlighted; use `Ctrl+N` / `Ctrl+P` to jump between preview matches. Toggle conversation sort order with `o`. Press `z` to view the preview fullscreen. Click the session ID row to copy it to clipboard
 - **Copy session ID** (`c`) — copy the selected session's ID to the system clipboard. Also available by clicking the ID row in the preview pane
@@ -162,7 +162,7 @@ alias dc='dispatch --current'
 3. Navigate with arrow keys or `j`/`k`
 4. Press `p` to toggle the preview pane and read the conversation
 5. Press `Enter` to resume the selected session (opens in a new tab by default)
-6. Use `Tab` to cycle grouping modes (list → folder → repo → branch → date → host)
+6. Use `Tab` to cycle grouping modes (list → folder → repo → branch → date → host → title)
 7. Press `s` to cycle sort fields, `S` to flip direction
 8. Press `,` to open settings — change theme, launch mode, model, and more
 
@@ -545,8 +545,8 @@ The page targets section 1 (user commands) and mirrors the built-in usage: comma
 | `↓` / `j` | Move down |
 | `g` / `Home` | Jump to top |
 | `G` / `End` | Jump to bottom |
-| `←` | Collapse group |
-| `→` | Expand group |
+| `←` | Collapse metadata group |
+| `→` | Expand metadata group |
 
 #### Launch & Session
 
@@ -651,7 +651,7 @@ Dates accept `YYYY-MM-DD` or full RFC3339 timestamps (e.g. `after:2024-01-15` or
 | `m` | Edit note on current session |
 | `C` | Copy working directory path to clipboard |
 | `y` | Copy preview text to clipboard |
-| `x` | Expand or collapse all groups |
+| `x` | Expand or collapse all metadata groups |
 | `:` | Open the command palette |
 
 #### Time Range (when search is not focused)
@@ -744,7 +744,7 @@ Use `dispatch config validate --path <file>` to check another config file withou
 | `default_time_range` | string | `"1d"` | Time filter: `1h`, `1d`, `7d`, `all` |
 | `default_sort` | string | `"updated"` | Sort field: `updated`, `created`, `turns`, `name`, `folder` |
 | `default_sort_order` | string | `"desc"` | Sort direction: `asc`, `desc` |
-| `default_pivot` | string | `"folder"` | Grouping: `none`, `folder`, `repo`, `branch`, `date`, `host` |
+| `default_pivot` | string | `"folder"` | Grouping: `none`, `folder`, `repo`, `branch`, `date`, `host`, `title` |
 | `default_collapsed` | bool | `false` | Start group headers collapsed (single-line) |
 | `show_preview` | bool | `true` | Show preview pane on startup |
 | `preview_position` | string | `"right"` | Position of the preview pane: `right`, `bottom`, `left`, `top` |
@@ -771,6 +771,7 @@ Use `dispatch config validate --path <file>` to check another config file withou
 | `sessionTags` | object | `{}` | Map of session ID to a list of user-defined tags |
 | `sessionAliases` | object | `{}` | Map of session ID to a unique short alias for `dispatch open <alias>` |
 | `views` | array | `[]` | Named search, sort, pivot, and filter presets |
+| `title_groups` | object | *(unset)* | Ordered regular-expression rules for the `title` pivot; see [Title Grouping](#title-grouping) |
 | `launch_sets` | array | `[]` | Named, ordered session ID collections for repeated multi-session launches. Missing IDs are shown in the TUI and skipped |
 | `project_roots` | array | `[]` | Absolute directories to scan for git repos that should appear as `New session` rows when they have no recent session |
 | `active_view` | string | `""` | Name of the named view to apply on startup. Empty means default filters |
@@ -801,6 +802,52 @@ When you run dispatch inside a tmux session (the `TMUX` environment variable is 
 | `auto` | *(none)* | tmux uses its default (a pane below) |
 
 The split starts in the session's working directory (`-c`) and runs the resume command in your shell. Outside tmux, pane mode behaves as before.
+
+### Title Grouping
+
+Set the pivot to `"title"` to build a two-level hierarchy from session titles. Rules are evaluated in configuration order. A regular rule selects one real parent session with `parent_pattern` and can assign children with `child_pattern`; omitting `child_pattern` pins a childless session at that position. Patterns are Go regular expressions and match the effective displayed title, including a manually renamed Copilot session title.
+
+`title_groups` is a global list shared by named views; a view opts into it by setting `"pivot": "title"`. Because it is structured configuration, edit it with `dispatch config edit` (or edit `config.json` directly) rather than `dispatch config set`.
+
+```json
+{
+  "default_pivot": "title",
+  "title_groups": {
+    "groups": [
+      {
+        "parent_pattern": "^Journal$"
+      },
+      {
+        "parent_pattern": "^p0--operations$",
+        "child_pattern": "^p0-i[0-9]+--",
+        "sort_by": "name"
+      },
+      {
+        "parent_pattern": "^p1--oncall$",
+        "child_pattern": "^p1-i[0-9]+--",
+        "sort_by": "updated"
+      },
+      {
+        "parent_pattern": "^Pull Requests$",
+        "child_pattern": "^PR:",
+        "sort_by": "updated"
+      },
+      {
+        "title": "Other",
+        "remaining": true,
+        "sort_by": "updated"
+      }
+    ],
+    "ungrouped_sort": "updated"
+  }
+}
+```
+
+Configuration order fixes the order of parent rows. `sort_by` accepts `"name"` (natural ascending title order) or `"updated"` (newest first); when omitted, sessions keep the active Dispatch sort order. When no `remaining` group is configured, unmatched sessions appear as ordinary top-level rows after the configured groups, and `ungrouped_sort` can apply either of the same sort choices to them.
+
+Parent patterns must resolve to exactly one session. A missing parent omits that group and leaves its potential children ungrouped; an ambiguous parent also leaves the sessions ungrouped and reports a warning. Parent sessions are resolved before child rules, and the first child rule to match a session wins. At most one `{ "remaining": true }` rule is allowed.
+
+Title groups are always expanded and separated by one blank row. The real parent row remains selectable and resumable. Filtering is applied to sessions without losing the hierarchy: a matching child can show its nonmatching parent as dimmed context, while nonmatching siblings stay hidden. Hiding a child hides only that child; hiding a real parent suppresses its entire title group until hidden sessions are shown. Favorites, tags, attention, work status, git state, time range, search, and named-view filters continue to operate on individual sessions. Synthetic labels such as `Other` are not searchable or hideable.
 
 ### Example config.json
 

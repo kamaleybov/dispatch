@@ -36,7 +36,8 @@
         "repo",
         "branch",
         "date",
-        "host"
+        "host",
+        "title"
       ],
       "type": "string"
     },
@@ -363,6 +364,47 @@
     "theme": {
       "type": "string"
     },
+    "title_groups": {
+      "additionalProperties": false,
+      "properties": {
+        "groups": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "child_pattern": {
+                "type": "string"
+              },
+              "parent_pattern": {
+                "type": "string"
+              },
+              "remaining": {
+                "type": "boolean"
+              },
+              "sort_by": {
+                "enum": [
+                  "name",
+                  "updated"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "ungrouped_sort": {
+          "enum": [
+            "name",
+            "updated"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "views": {
       "items": {
         "additionalProperties": false,
@@ -386,7 +428,8 @@
               "repo",
               "branch",
               "date",
-              "host"
+              "host",
+              "title"
             ],
             "type": "string"
           },

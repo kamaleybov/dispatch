@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable title grouping**: The new `title` pivot builds ordered two-level session hierarchies from regular-expression rules in `config.json`, with real selectable parent sessions, optional childless pinned entries, per-group name or updated sorting, an optional synthetic remaining group, unmatched top-level sessions, and blank spacing between groups. Existing search, filters, hidden sessions, favorites, named views, quick starts, selection, preview, and launch actions remain integrated; filtered children retain dimmed parent context, while hiding a parent suppresses its title-group subtree.
+
 ### Fixed
 
 - **Manually renamed Copilot sessions showing stale titles**: Dispatch now treats a `workspace.yaml` name marked `user_named: true` as authoritative over Chronicle's indexed summary. The corrected title is used consistently in lists, grouped views, details, search, sorting, CLI output, and exports, and live rename changes refresh without restarting Dispatch.

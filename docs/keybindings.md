@@ -222,7 +222,7 @@
     - File: internal\tui\keys.go
     - Code: key.NewBinding(key.WithKeys("tab"))
     - Handler: internal\tui\model.go
-    - Behavior: Cycles grouping: list → folder → repo → branch → date → host → list
+    - Behavior: Cycles grouping: list → folder → repo → branch → date → host → title → list
     - Condition: In session list view
 
 ### Preview and Display
@@ -678,7 +678,7 @@ When help overlay is open (after pressing ?):
 
 71. **Click Group Indicator** → Cycle Group Mode
     - Handler: internal\tui\model.go
-    - Behavior: Cycles group mode (list, folder, repo, branch, date, host)
+    - Behavior: Cycles group mode (list, folder, repo, branch, date, host, title)
     - Condition: Click on Y=1, within group indicator area
 
 ### Scroll Wheel (Mouse)

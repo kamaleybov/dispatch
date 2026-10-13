@@ -69,7 +69,7 @@ func configFields() []configField {
 		enumField("default_sort_order", func(c *config.Config) *string { return &c.DefaultSortOrder },
 			config.SortOrderAsc, config.SortOrderDesc),
 		enumField("default_pivot", func(c *config.Config) *string { return &c.DefaultPivot },
-			config.PivotNone, config.PivotFolder, config.PivotRepo, config.PivotBranch, config.PivotDate, config.PivotHost),
+			config.PivotNone, config.PivotFolder, config.PivotRepo, config.PivotBranch, config.PivotDate, config.PivotHost, config.PivotTitle),
 		boolField("show_preview", func(c *config.Config) *bool { return &c.ShowPreview }),
 		maxSessionsField(),
 		boolField("yoloMode", func(c *config.Config) *bool { return &c.YoloMode }),

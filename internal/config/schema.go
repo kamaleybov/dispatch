@@ -143,7 +143,7 @@ func ValidateConfig(cfg *Config) []Diagnostic {
 	addEnum("default_time_range", cfg.DefaultTimeRange, []string{TimeRange1h, TimeRange1d, TimeRange7d, TimeRangeAll})
 	addEnum("default_sort", cfg.DefaultSort, []string{SortFieldUpdated, SortFieldCreated, SortFieldTurns, SortFieldName, SortFieldFolder})
 	addEnum("default_sort_order", cfg.DefaultSortOrder, []string{SortOrderAsc, SortOrderDesc})
-	addEnum("default_pivot", cfg.DefaultPivot, []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost})
+	addEnum("default_pivot", cfg.DefaultPivot, []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost, PivotTitle})
 	addEnum("launch_mode", cfg.LaunchMode, []string{LaunchModeInPlace, LaunchModeTab, LaunchModeWindow, LaunchModePane})
 	addEnum("pane_direction", cfg.PaneDirection, []string{PaneDirectionAuto, PaneDirectionRight, PaneDirectionDown, PaneDirectionLeft, PaneDirectionUp})
 	addEnum("preview_position", cfg.PreviewPosition, []string{PreviewPositionRight, PreviewPositionBottom, PreviewPositionLeft, PreviewPositionTop})
@@ -165,6 +165,7 @@ func ValidateConfig(cfg *Config) []Diagnostic {
 	diags = append(diags, validateSessionKeyMap("sessionTags", cfg.SessionTags)...)
 	diags = append(diags, validateSessionKeyMap("sessionAliases", cfg.SessionAliases)...)
 	diags = append(diags, validateViews(cfg)...)
+	diags = append(diags, validateTitleGroups(cfg.TitleGroups)...)
 	diags = append(diags, validateLaunchSets(cfg.LaunchSets)...)
 	diags = append(diags, validateProjectRoots(cfg.ProjectRoots)...)
 	diags = append(diags, validateSchemes(cfg.Schemes)...)
@@ -268,11 +269,72 @@ func validateViews(cfg *Config) []Diagnostic {
 		addViewEnum("time_range", v.TimeRange, []string{TimeRange1h, TimeRange1d, TimeRange7d, TimeRangeAll})
 		addViewEnum("sort", v.Sort, []string{SortFieldUpdated, SortFieldCreated, SortFieldTurns, SortFieldName, SortFieldFolder})
 		addViewEnum("sort_order", v.SortOrder, []string{SortOrderAsc, SortOrderDesc})
-		addViewEnum("pivot", v.Pivot, []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost})
+		addViewEnum("pivot", v.Pivot, []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost, PivotTitle})
 	}
 	if cfg.ActiveView != "" && cfg.ActiveView != "Default" {
 		if _, ok := names[cfg.ActiveView]; !ok {
 			diags = append(diags, errorDiagnostic("active_view", fmt.Sprintf("unknown named view %q", cfg.ActiveView)))
+		}
+	}
+	return diags
+}
+
+func validateTitleGroups(cfg *TitleGroupsConfig) []Diagnostic {
+	if cfg == nil {
+		return nil
+	}
+
+	var diags []Diagnostic
+	if cfg.UngroupedSort != "" && !stringIn(cfg.UngroupedSort, []string{
+		TitleGroupSortName, TitleGroupSortUpdated,
+	}) {
+		diags = append(diags, errorDiagnostic(
+			"title_groups.ungrouped_sort",
+			fmt.Sprintf("invalid title group sort %q", cfg.UngroupedSort),
+		))
+	}
+
+	remainingSeen := false
+	for i, group := range cfg.Groups {
+		base := fmt.Sprintf("title_groups.groups[%d]", i)
+		if group.SortBy != "" && !stringIn(group.SortBy, []string{
+			TitleGroupSortName, TitleGroupSortUpdated,
+		}) {
+			diags = append(diags, errorDiagnostic(
+				base+".sort_by",
+				fmt.Sprintf("invalid title group sort %q", group.SortBy),
+			))
+		}
+
+		if group.Remaining {
+			if remainingSeen {
+				diags = append(diags, errorDiagnostic(base+".remaining", "only one remaining group is allowed"))
+			}
+			remainingSeen = true
+			if strings.TrimSpace(group.Title) == "" {
+				diags = append(diags, errorDiagnostic(base+".title", "remaining groups require a title"))
+			}
+			if group.ParentPattern != "" {
+				diags = append(diags, errorDiagnostic(base+".parent_pattern", "remaining groups cannot define a parent pattern"))
+			}
+			if group.ChildPattern != "" {
+				diags = append(diags, errorDiagnostic(base+".child_pattern", "remaining groups cannot define a child pattern"))
+			}
+			continue
+		}
+
+		if strings.TrimSpace(group.ParentPattern) == "" {
+			diags = append(diags, errorDiagnostic(base+".parent_pattern", "group requires a parent pattern"))
+		} else if _, err := regexp.Compile(group.ParentPattern); err != nil {
+			diags = append(diags, errorDiagnostic(base+".parent_pattern", "invalid regular expression: "+err.Error()))
+		}
+		if group.ChildPattern != "" {
+			if _, err := regexp.Compile(group.ChildPattern); err != nil {
+				diags = append(diags, errorDiagnostic(base+".child_pattern", "invalid regular expression: "+err.Error()))
+			}
+		}
+		if group.Title != "" {
+			diags = append(diags, errorDiagnostic(base+".title", "only remaining groups can define a title"))
 		}
 	}
 	return diags
@@ -451,7 +513,9 @@ func schemaForField(name string, typ reflect.Type) (map[string]any, error) {
 	case "default_sort_order", "sort_order":
 		base["enum"] = []string{SortOrderAsc, SortOrderDesc}
 	case "default_pivot", "pivot":
-		base["enum"] = []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost}
+		base["enum"] = []string{PivotNone, PivotFolder, PivotRepo, PivotBranch, PivotDate, PivotHost, PivotTitle}
+	case "sort_by", "ungrouped_sort":
+		base["enum"] = []string{TitleGroupSortName, TitleGroupSortUpdated}
 	case "launch_mode":
 		base["enum"] = []string{LaunchModeInPlace, LaunchModeTab, LaunchModeWindow, LaunchModePane}
 	case "pane_direction":
